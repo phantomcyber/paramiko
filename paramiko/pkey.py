@@ -25,7 +25,7 @@ from base64 import encodebytes, decodebytes
 from binascii import unhexlify
 import os
 from pathlib import Path
-from hashlib import md5, sha256
+from hashlib import sha256
 import re
 import struct
 
@@ -348,14 +348,14 @@ class PKey:
 
     def get_fingerprint(self):
         """
-        Return an MD5 fingerprint of the public part of this key.  Nothing
+        Return an SHA256 fingerprint of the public part of this key.  Nothing
         secret is revealed.
 
         :return:
-            a 16-byte `string <str>` (binary) of the MD5 fingerprint, in SSH
+            a 32-byte `string <str>` (binary) of the SHA256 fingerprint, in SSH
             format.
         """
-        return md5(self.asbytes()).digest()
+        return sha256(self.asbytes()).digest()
 
     @property
     def fingerprint(self):
@@ -591,7 +591,7 @@ class PKey:
         keysize = self._CIPHER_TABLE[encryption_type]["keysize"]
         mode = self._CIPHER_TABLE[encryption_type]["mode"]
         salt = unhexlify(b(saltstr))
-        key = util.generate_key_bytes(md5, salt, password, keysize)
+        key = util.generate_key_bytes(sha256, salt, password, keysize)
         decryptor = Cipher(
             cipher(key), mode(salt), backend=default_backend()
         ).decryptor()
