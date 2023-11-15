@@ -15,7 +15,7 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with Paramiko; if not, write to the Free Software Foundation, Inc.,
-# 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA.
+# 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301 USA.
 
 """
 Some unit tests for public/private key objects.
@@ -23,8 +23,10 @@ Some unit tests for public/private key objects.
 
 import unittest
 import os
+import stat
 from binascii import hexlify
 from hashlib import md5
+from io import StringIO
 
 from paramiko import (
     RSAKey,
@@ -35,14 +37,15 @@ from paramiko import (
     util,
     SSHException,
 )
-from paramiko.py3compat import StringIO, byte_chr, b, bytes, PY2
+from paramiko.util import b
+from paramiko.common import o600, byte_chr
 
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateNumbers
-from mock import patch
+from unittest.mock import patch, Mock
 import pytest
 
-from .util import _support, is_low_entropy
+from ._util import _support, is_low_entropy, requires_sha1_signing
 
 
 # from openssh's ssh-keygen
@@ -131,17 +134,10 @@ L4QLcT5aND0EHZLB2fAUDXiWIb2j4rg1mwPlBMiBXA==
 
 x1234 = b"\x01\x02\x03\x04"
 
-TEST_KEY_BYTESTR_2 = "\x00\x00\x00\x07ssh-rsa\x00\x00\x00\x01#\x00\x00\x00\x81\x00\xd3\x8fV\xea\x07\x85\xa6k%\x8d<\x1f\xbc\x8dT\x98\xa5\x96$\xf3E#\xbe>\xbc\xd2\x93\x93\x87f\xceD\x18\xdb \x0c\xb3\xa1a\x96\xf8e#\xcc\xacS\x8a#\xefVlE\x83\x1epv\xc1o\x17M\xef\xdf\x89DUXL\xa6\x8b\xaa<\x06\x10\xd7\x93w\xec\xaf\xe2\xaf\x95\xd8\xfb\xd9\xbfw\xcb\x9f0)#y{\x10\x90\xaa\x85l\tPru\x8c\t\x19\xce\xa0\xf1\xd2\xdc\x8e/\x8b\xa8f\x9c0\xdey\x84\xd2F\xf7\xcbmm\x1f\x87"  # noqa
-TEST_KEY_BYTESTR_3 = "\x00\x00\x00\x07ssh-rsa\x00\x00\x00\x01#\x00\x00\x00\x00ӏV\x07k%<\x1fT$E#>ғfD\x18 \x0cae#̬S#VlE\x1epvo\x17M߉DUXL<\x06\x10דw\u2bd5ٿw˟0)#y{\x10l\tPru\t\x19Π\u070e/f0yFmm\x1f"  # noqa
+TEST_KEY_BYTESTR = "\x00\x00\x00\x07ssh-rsa\x00\x00\x00\x01#\x00\x00\x00\x00ӏV\x07k%<\x1fT$E#>ғfD\x18 \x0cae#̬S#VlE\x1epvo\x17M߉DUXL<\x06\x10דw\u2bd5ٿw˟0)#y{\x10l\tPru\t\x19Π\u070e/f0yFmm\x1f"  # noqa
 
 
 class KeyTest(unittest.TestCase):
-    def setUp(self):
-        pass
-
-    def tearDown(self):
-        pass
-
     def assert_keyfile_is_encrypted(self, keyfile):
         """
         A quick check that filename looks like an encrypted key.
@@ -159,7 +155,7 @@ class KeyTest(unittest.TestCase):
         self.assertEqual(exp, key)
 
     def test_load_rsa(self):
-        key = RSAKey.from_private_key_file(_support("test_rsa.key"))
+        key = RSAKey.from_private_key_file(_support("rsa.key"))
         self.assertEqual("ssh-rsa", key.get_name())
         exp_rsa = b(FINGER_RSA.split()[1].replace(":", ""))
         my_rsa = hexlify(key.get_fingerprint())
@@ -182,7 +178,12 @@ class KeyTest(unittest.TestCase):
             ) as loader:
                 loader.side_effect = exception
                 with pytest.raises(SSHException, match=str(exception)):
-                    RSAKey.from_private_key_file(_support("test_rsa.key"))
+                    RSAKey.from_private_key_file(_support("rsa.key"))
+
+    def test_loading_empty_keys_errors_usefully(self):
+        # #1599 - raise SSHException instead of IndexError
+        with pytest.raises(SSHException, match="no lines"):
+            RSAKey.from_private_key_file(_support("blank_rsa.key"))
 
     def test_load_rsa_password(self):
         key = RSAKey.from_private_key_file(
@@ -196,7 +197,7 @@ class KeyTest(unittest.TestCase):
         self.assertEqual(1024, key.get_bits())
 
     def test_load_dss(self):
-        key = DSSKey.from_private_key_file(_support("test_dss.key"))
+        key = DSSKey.from_private_key_file(_support("dss.key"))
         self.assertEqual("ssh-dss", key.get_name())
         exp_dss = b(FINGER_DSS.split()[1].replace(":", ""))
         my_dss = hexlify(key.get_fingerprint())
@@ -224,7 +225,7 @@ class KeyTest(unittest.TestCase):
 
     def test_compare_rsa(self):
         # verify that the private & public keys compare equal
-        key = RSAKey.from_private_key_file(_support("test_rsa.key"))
+        key = RSAKey.from_private_key_file(_support("rsa.key"))
         self.assertEqual(key, key)
         pub = RSAKey(data=key.asbytes())
         self.assertTrue(key.can_sign())
@@ -233,7 +234,7 @@ class KeyTest(unittest.TestCase):
 
     def test_compare_dss(self):
         # verify that the private & public keys compare equal
-        key = DSSKey.from_private_key_file(_support("test_dss.key"))
+        key = DSSKey.from_private_key_file(_support("dss.key"))
         self.assertEqual(key, key)
         pub = DSSKey(data=key.asbytes())
         self.assertTrue(key.can_sign())
@@ -241,12 +242,12 @@ class KeyTest(unittest.TestCase):
         self.assertEqual(key, pub)
 
     def _sign_and_verify_rsa(self, algorithm, saved_sig):
-        key = RSAKey.from_private_key_file(_support("test_rsa.key"))
+        key = RSAKey.from_private_key_file(_support("rsa.key"))
         msg = key.sign_ssh_data(b"ice weasels", algorithm)
         assert isinstance(msg, Message)
         msg.rewind()
         assert msg.get_text() == algorithm
-        expected = bytes().join(
+        expected = b"".join(
             [byte_chr(int(x, 16)) for x in saved_sig.split(":")]
         )
         assert msg.get_binary() == expected
@@ -254,6 +255,7 @@ class KeyTest(unittest.TestCase):
         pub = RSAKey(data=key.asbytes())
         self.assertTrue(pub.verify_ssh_sig(b"ice weasels", msg))
 
+    @requires_sha1_signing
     def test_sign_and_verify_ssh_rsa(self):
         self._sign_and_verify_rsa("ssh-rsa", SIGNED_RSA)
 
@@ -265,7 +267,7 @@ class KeyTest(unittest.TestCase):
 
     def test_sign_dss(self):
         # verify that the dss private key can sign and verify
-        key = DSSKey.from_private_key_file(_support("test_dss.key"))
+        key = DSSKey.from_private_key_file(_support("dss.key"))
         msg = key.sign_ssh_data(b"ice weasels")
         self.assertTrue(type(msg) is Message)
         msg.rewind()
@@ -278,6 +280,7 @@ class KeyTest(unittest.TestCase):
         pub = DSSKey(data=key.asbytes())
         self.assertTrue(pub.verify_ssh_sig(b"ice weasels", msg))
 
+    @requires_sha1_signing
     def test_generate_rsa(self):
         key = RSAKey.generate(1024)
         msg = key.sign_ssh_data(b"jerri blank")
@@ -320,7 +323,7 @@ class KeyTest(unittest.TestCase):
         self.assertEqual(key.get_name(), "ecdsa-sha2-nistp521")
 
     def test_load_ecdsa_256(self):
-        key = ECDSAKey.from_private_key_file(_support("test_ecdsa_256.key"))
+        key = ECDSAKey.from_private_key_file(_support("ecdsa-256.key"))
         self.assertEqual("ecdsa-sha2-nistp256", key.get_name())
         exp_ecdsa = b(FINGER_ECDSA_256.split()[1].replace(":", ""))
         my_ecdsa = hexlify(key.get_fingerprint())
@@ -348,7 +351,7 @@ class KeyTest(unittest.TestCase):
 
     def test_compare_ecdsa_256(self):
         # verify that the private & public keys compare equal
-        key = ECDSAKey.from_private_key_file(_support("test_ecdsa_256.key"))
+        key = ECDSAKey.from_private_key_file(_support("ecdsa-256.key"))
         self.assertEqual(key, key)
         pub = ECDSAKey(data=key.asbytes())
         self.assertTrue(key.can_sign())
@@ -357,7 +360,7 @@ class KeyTest(unittest.TestCase):
 
     def test_sign_ecdsa_256(self):
         # verify that the rsa private key can sign and verify
-        key = ECDSAKey.from_private_key_file(_support("test_ecdsa_256.key"))
+        key = ECDSAKey.from_private_key_file(_support("ecdsa-256.key"))
         msg = key.sign_ssh_data(b"ice weasels")
         self.assertTrue(type(msg) is Message)
         msg.rewind()
@@ -399,7 +402,7 @@ class KeyTest(unittest.TestCase):
         self.assertEqual(384, key.get_bits())
 
     def test_load_ecdsa_transmutes_crypto_exceptions(self):
-        path = _support("test_ecdsa_256.key")
+        path = _support("ecdsa-256.key")
         # TODO: nix unittest for pytest
         for exception in (TypeError("onoz"), UnsupportedAlgorithm("oops")):
             with patch(
@@ -560,12 +563,12 @@ class KeyTest(unittest.TestCase):
         RSAKey.from_private_key_file(_support("test_rsa_openssh_nopad.key"))
 
     def test_stringification(self):
-        key = RSAKey.from_private_key_file(_support("test_rsa.key"))
-        comparable = TEST_KEY_BYTESTR_2 if PY2 else TEST_KEY_BYTESTR_3
+        key = RSAKey.from_private_key_file(_support("rsa.key"))
+        comparable = TEST_KEY_BYTESTR
         self.assertEqual(str(key), comparable)
 
     def test_ed25519(self):
-        key1 = Ed25519Key.from_private_key_file(_support("test_ed25519.key"))
+        key1 = Ed25519Key.from_private_key_file(_support("ed25519.key"))
         key2 = Ed25519Key.from_private_key_file(
             _support("test_ed25519_password.key"), b"abc123"
         )
@@ -585,7 +588,7 @@ class KeyTest(unittest.TestCase):
 
     def test_ed25519_compare(self):
         # verify that the private & public keys compare equal
-        key = Ed25519Key.from_private_key_file(_support("test_ed25519.key"))
+        key = Ed25519Key.from_private_key_file(_support("ed25519.key"))
         self.assertEqual(key, key)
         pub = Ed25519Key(data=key.asbytes())
         self.assertTrue(key.can_sign())
@@ -607,28 +610,6 @@ class KeyTest(unittest.TestCase):
         )
         assert original != generated
 
-    def keys(self):
-        for key_class, filename in [
-            (RSAKey, "test_rsa.key"),
-            (DSSKey, "test_dss.key"),
-            (ECDSAKey, "test_ecdsa_256.key"),
-            (Ed25519Key, "test_ed25519.key"),
-        ]:
-            key1 = key_class.from_private_key_file(_support(filename))
-            key2 = key_class.from_private_key_file(_support(filename))
-            yield key1, key2
-
-    def test_keys_are_comparable(self):
-        for key1, key2 in self.keys():
-            assert key1 == key2
-
-    def test_keys_are_hashable(self):
-        # NOTE: this isn't a great test due to hashseed randomization under
-        # Python 3 preventing use of static values, but it does still prove
-        # that __hash__ is implemented/doesn't explode & works across instances
-        for key1, key2 in self.keys():
-            assert hash(key1) == hash(key2)
-
     def test_ed25519_nonbytes_password(self):
         # https://github.com/paramiko/paramiko/issues/1039
         Ed25519Key.from_private_key_file(
@@ -640,7 +621,7 @@ class KeyTest(unittest.TestCase):
         # No exception -> it's good. Meh.
 
     def test_ed25519_load_from_file_obj(self):
-        with open(_support("test_ed25519.key")) as pkey_fileobj:
+        with open(_support("ed25519.key")) as pkey_fileobj:
             key = Ed25519Key.from_private_key(pkey_fileobj)
         self.assertEqual(key, key)
         self.assertTrue(key.can_sign())
@@ -660,39 +641,56 @@ class KeyTest(unittest.TestCase):
         finally:
             os.remove(newfile)
 
-    def test_certificates(self):
-        # NOTE: we also test 'live' use of cert auth for all key types in
-        # test_client.py; this and nearby cert tests are more about the gritty
-        # details.
-        # PKey.load_certificate
-        key_path = _support(os.path.join("cert_support", "test_rsa.key"))
-        key = RSAKey.from_private_key_file(key_path)
-        self.assertTrue(key.public_blob is None)
-        cert_path = _support(
-            os.path.join("cert_support", "test_rsa.key-cert.pub")
+    @patch("paramiko.pkey.os")
+    def _test_keyfile_race(self, os_, exists):
+        # Re: CVE-2022-24302
+        password = "television"
+        newpassword = "radio"
+        source = _support("test_ecdsa_384.key")
+        new = source + ".new"
+        # Mock setup
+        os_.path.exists.return_value = exists
+        # Attach os flag values to mock
+        for attr, value in vars(os).items():
+            if attr.startswith("O_"):
+                setattr(os_, attr, value)
+        # Load fixture key
+        key = ECDSAKey(filename=source, password=password)
+        key._write_private_key = Mock()
+        # Write out in new location
+        key.write_private_key_file(new, password=newpassword)
+        # Expected open via os module
+        os_.open.assert_called_once_with(
+            new, flags=os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode=o600
         )
-        key.load_certificate(cert_path)
-        self.assertTrue(key.public_blob is not None)
-        self.assertEqual(
-            key.public_blob.key_type, "ssh-rsa-cert-v01@openssh.com"
+        os_.fdopen.assert_called_once_with(os_.open.return_value, "w")
+        assert (
+            key._write_private_key.call_args[0][0]
+            == os_.fdopen.return_value.__enter__.return_value
         )
-        self.assertEqual(key.public_blob.comment, "test_rsa.key.pub")
-        # Delve into blob contents, for test purposes
-        msg = Message(key.public_blob.key_blob)
-        self.assertEqual(msg.get_text(), "ssh-rsa-cert-v01@openssh.com")
-        msg.get_string()
-        e = msg.get_mpint()
-        n = msg.get_mpint()
-        self.assertEqual(e, key.public_numbers.e)
-        self.assertEqual(n, key.public_numbers.n)
-        # Serial number
-        self.assertEqual(msg.get_int64(), 1234)
 
-        # Prevented from loading certificate that doesn't match
-        key_path = _support(os.path.join("cert_support", "test_ed25519.key"))
-        key1 = Ed25519Key.from_private_key_file(key_path)
-        self.assertRaises(
-            ValueError,
-            key1.load_certificate,
-            _support("test_rsa.key-cert.pub"),
-        )
+    def test_new_keyfiles_avoid_file_descriptor_race_on_chmod(self):
+        self._test_keyfile_race(exists=False)
+
+    def test_existing_keyfiles_still_work_ok(self):
+        self._test_keyfile_race(exists=True)
+
+    def test_new_keyfiles_avoid_descriptor_race_integration(self):
+        # Integration-style version of above
+        password = "television"
+        newpassword = "radio"
+        source = _support("test_ecdsa_384.key")
+        new = source + ".new"
+        # Load fixture key
+        key = ECDSAKey(filename=source, password=password)
+        try:
+            # Write out in new location
+            key.write_private_key_file(new, password=newpassword)
+            # Test mode
+            assert stat.S_IMODE(os.stat(new).st_mode) == o600
+            # Prove can open with new password
+            reloaded = ECDSAKey(filename=new, password=newpassword)
+            assert reloaded == key
+        finally:
+            if os.path.exists(new):
+                os.unlink(new)
